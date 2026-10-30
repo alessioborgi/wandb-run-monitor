@@ -10,8 +10,10 @@ Interactive live Streamlit dashboard for `adavit/sheaf-mpnn-runs`.
   - All other datasets: `mean_val_acc`. Show that run's `mean_test_acc` and `std_test_acc`.
 - The progress table includes the selected run's scores and link. A separate leaderboard ranks combinations **within each dataset** by best validation performance. This prevents selecting runs based on test performance.
 - If no run has a valid validation metric, keep its count but leave its best-score fields blank rather than making up a result.
-- Refresh manually or every two minutes while the website is open.
+- Refresh manually or every five minutes while the website is open.
 - Hourly GitHub Actions email alerts for newly completed combinations.
+- Stream W&B GraphQL pages in bounded batches (30 per page), keeping only one group summary and up to five run examples per combination, instead of caching thousands of full W&B Run objects. This reduces Streamlit Community Cloud memory pressure.
+- The web app displays sample run IDs, not an exhaustive run-by-run table. Complete runs are available in W&B.
 
 ## Local launch
 ```bash
@@ -26,7 +28,9 @@ Host this private repository as a Streamlit application on a supported platform,
 
 For email alerts add four **GitHub Actions repository secrets**: `WANDB_API_KEY`, `SMTP_USER`, `SMTP_PASSWORD`, and `ALERT_TO`. Gmail SMTP requires an app password (not your regular password). The workflow checks hourly, emails groups reaching 250 for the first time, and records them in `data/notified.json`. Never commit credentials.
 
-No authenticated W&B data has been checked yet. Hosting and secret configuration are required before the live dashboard and email checker become operational.
+The dashboard uses the existing Streamlit secrets; no credentials are stored in this repository. If Community Cloud previously disabled the app for memory overuse, use the app's **Manage app → Reboot app** control after the redeployment. GitHub Actions email notifications require their own separate secrets.
+
+The compact GraphQL fetch uses a modern W&B Python SDK (`wandb>=0.27.1`). No authenticated live data has been checked by ChatGPT.
 
 ## Regression tests
 
