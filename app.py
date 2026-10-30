@@ -7,7 +7,7 @@ import altair as alt
 import streamlit as st
 
 from core import CREATOR, PROJECT, TARGET, ROC_DATASETS, TEST_COLUMNS, fetch
-from coverage import (
+from benchmark_coverage import (
     MODELS, RESTRICTION_MAPS, coverage_matrix, benchmark_datasets,
 )
 
