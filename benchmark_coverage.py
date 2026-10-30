@@ -1,54 +1,58 @@
-"""Benchmark coverage matrix for Pei et al. and Platonov et al.
+"""Repository-grounded Pei/Platonov expected sweep coverage.
 
-This module operates ONLY on compact group summaries. It never accesses W&B,
-and never requests or retains individual runs.
+Model-specific variants are from:
+alessioborgi/pytorch-SheafNeuralNetworks-working
+src/exp/registries/presets.py and configs/<dataset>/<model>/*.yaml.
+
+This operates only on compact finished-run summaries; no W&B API calls.
 """
 from itertools import product
 import re
 
 from core import TARGET
 
-# The first entry is intentionally 'nsp' (as specified), not 'nsd'.
-MODELS = (
-    "nsp",
-    "poly_nsd",
-    "bsnn",
-    "joint_diff",
-    "sheaf_deepset",
-    "sheaf_set_transformer",
-    "sheaf_gin",
-    "id_sheaf",
-    "conn_nsd",
-    "sheaf_att",
-    "rot_inv",
-)
+RESTRICTION_MAPS = ("diagonal", "general", "orthogonal", "low_rank")
 
-# Pei et al. 2020 / Geom-GCN: the Actor dataset is often logged as "film".
+# The 8 model families whose expected sweep map choices can be verified in
+# the source repository. It is incorrect to cross every family with four maps.
+MODEL_VARIANTS = {
+    "nsp": RESTRICTION_MAPS,
+    "poly_nsd": RESTRICTION_MAPS,
+    "bsnn": RESTRICTION_MAPS,
+    "joint_diff": ("general",),
+    "id_sheaf": ("diagonal",),   # identity transport, logged diagonal
+    "conn_nsd": ("orthogonal",), # feature-derived orthogonal transport
+    "sheaf_attn": ("res_sheafan",), # only shipped sweep YAML
+    "rot_inv": ("general",),
+}
+
+# These were requested but are not in the inspected repo's registries or
+# sweep YAMLs. Do not label invented configurations as "Missing".
+UNVERIFIED_MODELS = (
+    "sheaf_deepset", "sheaf_set_transformer", "sheaf_gin",
+)
+MODELS = tuple(MODEL_VARIANTS)
+ALL_REQUESTED_MODELS = MODELS + UNVERIFIED_MODELS
+
 PEI_DATASETS = (
     "texas", "wisconsin", "cornell", "chameleon", "squirrel", "film",
 )
-
-# Five new benchmark datasets introduced by Platonov et al. (ICLR 2023).
 PLATONOV_DATASETS = (
     "roman_empire", "amazon_ratings", "minesweeper", "tolokers", "questions",
 )
-
-# Cleaned/filtered variants discussed in Platonov et al. are optional.
 FILTERED_DATASETS = ("chameleon_filtered", "squirrel_filtered")
-
-RESTRICTION_MAPS = ("diagonal", "general", "orthogonal", "low_rank")
 
 
 def _token(value):
-    """Conservative case, whitespace, dash and underscore normalization."""
     value = str(value if value is not None else "").strip().casefold()
     value = re.sub(r"[\s-]+", "_", value)
     return re.sub(r"_+", "_", value).strip("_")
 
 
 def normalize_model(value):
-    # Do not equate nsp to nsd, or otherwise collapse different architectures.
-    return _token(value)
+    token = _token(value)
+    # The user wrote "sheaf_att"; the training registry logs "sheaf_attn".
+    return {"sheaf_att": "sheaf_attn", "sheafan": "sheaf_attn"}.get(token, token)
 
 
 def normalize_dataset(value):
@@ -64,8 +68,8 @@ def normalize_restriction_map(value):
     token = _token(value)
     return {
         "lowrank": "low_rank",
-        "low_rank": "low_rank",
         "low_rank_map": "low_rank",
+        "res_sheaf_an": "res_sheafan",
     }.get(token, token)
 
 
@@ -81,46 +85,66 @@ def benchmark_datasets(include_filtered=False):
     return datasets
 
 
-def coverage_matrix(groups, include_filtered=False, target=TARGET):
-    """Cross expected configs with available, *finished* compact W&B groups.
-
-    Groups are already restricted to creator fs395. Deduplicate source aliases
-    (e.g. Actor/Film and low-rank/low_rank) by summing their finished runs.
-    Return ALL expected combinations, including completely missing ones.
-    """
+def _counts(groups):
     counts = {}
     for row in groups:
         if _token(row.get("state", "finished")) != "finished":
             continue
         key = (
-            normalize_model(row.get("model", "")),
-            normalize_dataset(row.get("dataset", "")),
-            normalize_restriction_map(row.get("transport_type", "")),
+            normalize_model(row.get("model")),
+            normalize_dataset(row.get("dataset")),
+            normalize_restriction_map(row.get("transport_type")),
         )
         count = max(0, int(row.get("finished") or 0))
         counts[key] = counts.get(key, 0) + count
+    return counts
 
+
+def coverage_matrix(groups, include_filtered=False, target=TARGET):
+    """Generate only verified expected model/dataset/variant combinations."""
+    counts = _counts(groups)
     output = []
-    for model, (dataset, benchmark), restriction_map in product(
-        MODELS, benchmark_datasets(include_filtered), RESTRICTION_MAPS
-    ):
-        count = counts.get((model, dataset, restriction_map), 0)
-        status = (
-            "Missing" if count == 0
-            else "Complete" if count >= target
-            else "Incomplete"
-        )
-        output.append({
-            "model": model,
-            "dataset": dataset,
-            "restriction_maps": restriction_map,
-            "benchmark": benchmark,
-            "finished_runs": count,
-            "missing_runs": max(0, target - count),
-            "completion_pct": min(100.0, 100.0 * count / target),
-            "status": status,
-        })
+    for model, variants in MODEL_VARIANTS.items():
+        for (dataset, benchmark), variant in product(
+            benchmark_datasets(include_filtered), variants
+        ):
+            count = counts.get((model, dataset, variant), 0)
+            status = (
+                "Missing" if count == 0
+                else "Complete" if count >= target
+                else "Incomplete"
+            )
+            output.append({
+                "model": model,
+                "dataset": dataset,
+                "restriction_maps": variant,
+                "benchmark": benchmark,
+                "finished_runs": count,
+                "missing_runs": max(0, target - count),
+                "completion_pct": min(100.0, 100.0 * count / target),
+                "status": status,
+            })
     rank = {"Missing": 0, "Incomplete": 1, "Complete": 2}
-    return sorted(output, key=lambda row: (
-        rank[row["status"]], row["model"], row["dataset"], row["restriction_maps"]
-    ))
+    return sorted(
+        output,
+        key=lambda row: (
+            rank[row["status"]], row["model"],
+            row["dataset"], row["restriction_maps"],
+        ),
+    )
+
+
+def unverified_observations(groups, include_filtered=False):
+    """Show observed W&B variants for unverified model families, without
+    claiming that absent variants constitute missing experiments."""
+    datasets = {name for name, _ in benchmark_datasets(include_filtered)}
+    output = []
+    for (model, dataset, variant), count in sorted(_counts(groups).items()):
+        if model in UNVERIFIED_MODELS and dataset in datasets:
+            output.append({
+                "model": model, "dataset": dataset,
+                "transport_type_observed": variant,
+                "finished_runs": count,
+                "verification": "Observed in W&B; model map grid unverified",
+            })
+    return output
