@@ -1,29 +1,104 @@
-import os,json
+"""Collect completed W&B runs for one creator and aggregate progress."""
+import os
+import json
 from collections import Counter
-PROJECT="adavit/sheaf-mpnn-runs"
-TARGET=250
-KEYS=("state","model","dataset","transport_type")
-def fetch():
- import wandb
- key=os.environ["WANDB_API_KEY"]
- api=wandb.Api(api_key=key,overrides={"base_url":os.getenv("WANDB_BASE_URL","https://api.forge.coreweave.com")})
- rows=[];unknown=0;examined=0
- for r in api.runs(PROJECT,filters={"state":"finished"},per_page=200):
-  examined+=1
-  user=(getattr(r,"_attrs",{}) or {}).get("user")
-  username=user.get("username") if isinstance(user,dict) else getattr(user,"username",None)
-  if not username:
-   unknown+=1;continue
-  if username.casefold()!="fs395" or getattr(r,"state",None)!="finished":continue
-  conf=r.config or {}
-  vals={}
-  for key in KEYS[1:]:
-   v=conf.get(key,"(missing)")
-   if isinstance(v,dict) and "value" in v:v=v["value"]
-   vals[key]=json.dumps(v,sort_keys=True) if isinstance(v,(dict,list)) else str(v)
-  rows.append(dict(state="finished",**vals,run_id=r.id,name=r.name,url=getattr(r,"url","")))
- return {"runs":rows,"unknown":unknown,"examined":examined}
+
+PROJECT = "adavit/sheaf-mpnn-runs"
+TARGET = 250
+CREATOR = "fs395"
+KEYS = ("state", "model", "dataset", "transport_type")
+BASE_URL = "https://api.forge.coreweave.com"
+
+
+def _user_name(run):
+    """Read the creator field from W&B's run metadata."""
+    user = (getattr(run, "_attrs", {}) or {}).get("user")
+    if not user:
+        user = getattr(run, "user", None)
+    if isinstance(user, dict):
+        return user.get("username")
+    return getattr(user, "username", None)
+
+
+def _config_str(config, key):
+    value = (config or {}).get(key, "(missing)")
+    if isinstance(value, dict) and "value" in value:
+        value = value["value"]
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True)
+    return str(value)
+
+
+def fetch(progress=None):
+    """Fetch full run configurations by *page*, not one HTTP request per run.
+
+    User and state filtering happen server-side. The client also validates
+    each returned run so counts cannot include the wrong creator or state.
+    """
+    import wandb
+
+    key = os.environ.get("WANDB_API_KEY")
+    if not key:
+        raise RuntimeError("WANDB_API_KEY is missing from Streamlit secrets")
+
+    api = wandb.Api(
+        api_key=key,
+        overrides={"base_url": os.getenv("WANDB_BASE_URL", BASE_URL)},
+        timeout=45,
+    )
+    filters = {"state": "finished", "username": CREATOR}
+    runs = api.runs(
+        PROJECT,
+        filters=filters,
+        per_page=100,
+        lazy=False,  # important: avoid N additional config fetches
+    )
+    rows = []
+    examined = 0
+    unknown = 0
+    for run in runs:
+        examined += 1
+        username = _user_name(run)
+        if not username:
+            unknown += 1
+            continue
+        if username.casefold() != CREATOR or str(run.state).lower() != "finished":
+            continue
+
+        config = run.config or {}
+        rows.append({
+            "state": "finished",
+            "model": _config_str(config, "model"),
+            "dataset": _config_str(config, "dataset"),
+            "transport_type": _config_str(config, "transport_type"),
+            "run_id": str(run.id),
+            "name": str(run.name or run.id),
+            "url": str(getattr(run, "url", "") or ""),
+        })
+        if progress is not None and examined % 50 == 0:
+            progress(examined, len(rows))
+    if progress is not None:
+        progress(examined, len(rows))
+    return {"runs": rows, "examined": examined, "unknown": unknown}
+
+
 def aggregate(runs):
- counts=Counter(tuple(r[k] for k in KEYS) for r in runs)
- return sorted([dict(zip(KEYS,k),finished=n,remaining=max(0,TARGET-n),progress=min(100,100*n/TARGET),status="Complete" if n>=TARGET else "Almost there" if n>=200 else "In progress") for k,n in counts.items()],key=lambda r:-r["finished"])
-def group_id(row):return json.dumps([row[k] for k in KEYS])
+    counts = Counter(tuple(run[k] for k in KEYS) for run in runs)
+    return sorted(
+        [
+            {
+                **dict(zip(KEYS, group)),
+                "finished": count,
+                "remaining": max(0, TARGET - count),
+                "progress": min(100.0, 100.0 * count / TARGET),
+                "status": "Complete" if count >= TARGET else
+                          "Almost there" if count >= 200 else "In progress",
+            }
+            for group, count in counts.items()
+        ],
+        key=lambda row: (-row["finished"], row["model"], row["dataset"], row["transport_type"]),
+    )
+
+
+def group_id(row):
+    return json.dumps([row[k] for k in KEYS], separators=(",", ":"))
