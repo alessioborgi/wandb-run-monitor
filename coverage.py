@@ -42,7 +42,7 @@ RESTRICTION_MAPS = ("diagonal", "general", "orthogonal", "low_rank")
 def _token(value):
     """Conservative case, whitespace, dash and underscore normalization."""
     value = str(value if value is not None else "").strip().casefold()
-    value = re.sub(r"[\\s\\-]+", "_", value)
+    value = re.sub(r"[\s-]+", "_", value)
     return re.sub(r"_+", "_", value).strip("_")
 
 
