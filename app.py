@@ -8,7 +8,8 @@ import streamlit as st
 
 from core import CREATOR, PROJECT, TARGET, ROC_DATASETS, TEST_COLUMNS, fetch
 from benchmark_coverage import (
-    MODELS, RESTRICTION_MAPS, coverage_matrix, benchmark_datasets,
+    MODELS, MODEL_VARIANTS, UNVERIFIED_MODELS,
+    coverage_matrix, benchmark_datasets, unverified_observations,
 )
 
 st.set_page_config(page_title="Sheaf Run Monitor", page_icon="📈", layout="wide")
@@ -58,9 +59,9 @@ def show_benchmark_coverage(groups):
     """Show the Cartesian expected grid using only the compact W&B group list."""
     st.subheader("Missing benchmark combinations")
     st.caption(
-        "Expected coverage: the 11 specified model families × Pei/Platonov "
-        "heterophily datasets × 4 restriction maps. 'Missing' means ZERO "
-        "finished runs; 'Incomplete' means 1–249 finished runs."
+        "Expected configurations come from the model-specific sweep definitions "
+        "in pytorch-SheafNeuralNetworks-working, not an assumed four-map grid. "
+        "'Missing' means zero finished runs; 'Incomplete' means 1–249."
     )
     cleaned = st.checkbox(
         "Also include Platonov's cleaned Chameleon/Squirrel variants",
@@ -87,8 +88,9 @@ def show_benchmark_coverage(groups):
         "Dataset", [d for d, _ in benchmark_datasets(cleaned)],
         key="coverage_datasets",
     )
+    all_variants = sorted({value for variants in MODEL_VARIANTS.values() for value in variants})
     selected_maps = controls[2].multiselect(
-        "Restriction map", list(RESTRICTION_MAPS), key="coverage_maps"
+        "Restriction map / variant", all_variants, key="coverage_maps"
     )
     selected_status = controls[3].multiselect(
         "Progress status", ["Missing", "Incomplete", "Complete"],
@@ -126,9 +128,10 @@ def show_benchmark_coverage(groups):
     st.caption(
         f"Showing {len(coverage)} of {total} expected combinations. "
         "Counts are from finished runs created by fs395. "
-        "The restriction_maps column matches W&B's transport_type field; "
-        "Actor and Film, plus low-rank naming variants, are matched. "
-        "nsp is treated as distinct from nsd, as written in your request."
+        "The restriction_maps column matches the W&B transport_type field. "
+        "Identity and feature-derived map families have one configured variant; "
+        "sheaf_attn has only res_sheafan in the shipped sweep YAMLs. "
+        "nsp is distinct from nsd."
     )
     st.download_button(
         "Download displayed coverage (CSV)",
@@ -137,6 +140,21 @@ def show_benchmark_coverage(groups):
         mime="text/csv",
         key="coverage_csv",
     )
+
+    st.caption(
+        "Not yet verified in the inspected training repository: "
+        + ", ".join(UNVERIFIED_MODELS)
+        + ". These families are intentionally excluded from expected/missing "
+        "totals until their actual supported map variants can be established."
+    )
+    observed = unverified_observations(groups, include_filtered=cleaned)
+    if observed:
+        with st.expander("Observed runs for unverified model families"):
+            st.dataframe(
+                pd.DataFrame(observed),
+                hide_index=True,
+                use_container_width=True,
+            )
 
 
 @st.fragment(run_every="300s" if auto else None)
