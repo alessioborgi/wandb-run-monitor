@@ -39,19 +39,49 @@ Run `python -m unittest discover -s tests -v`. The private repository also inclu
 
 ## Missing benchmark combinations
 
-The Streamlit dashboard includes a separate **Missing benchmark combinations** table. It compares all expected model–dataset–restriction map configurations against the compact W&B snapshot for finished runs from creator `fs395`.
+The dashboard's expected matrix is derived from actual per-family sweep YAMLs and the
+`src/exp/registries/presets.py` model registry in the private source repository
+[`pytorch-SheafNeuralNetworks-working`](https://github.com/alessioborgi/pytorch-SheafNeuralNetworks-working).
+It no longer incorrectly assumes 4 restriction maps for every model.
 
-- Models (11): `nsp`, `poly_nsd`, `bsnn`, `joint_diff`, `sheaf_deepset`, `sheaf_set_transformer`, `sheaf_gin`, `id_sheaf`, `conn_nsd`, `sheaf_att`, `rot_inv`.
-- Pei et al. (2020) datasets (6): `texas`, `wisconsin`, `cornell`, `chameleon`, `squirrel`, `film` (alias: Actor).
-- Platonov et al. (2023) datasets (5): `roman_empire`, `amazon_ratings`, `minesweeper`, `tolokers`, `questions`.
-- Restriction maps (4): `diagonal`, `general`, `orthogonal`, `low_rank` (normalized from the W&B `transport_type` configuration field).
+| Model(s) | Logged W&B `transport_type` values | Expected per dataset |
+| --- | --- | --- |
+| `nsp`, `poly_nsd`, `bsnn` | diagonal, general, orthogonal, low_rank | 4 each |
+| `id_sheaf` | diagonal (identity maps) | 1 |
+| `conn_nsd` | orthogonal (feature-derived maps) | 1 |
+| `joint_diff`, `rot_inv` | general | 1 each |
+| `sheaf_attn` | res_sheafan | 1 |
 
-**Total expected:** 11 × 11 × 4 = **484 combinations**. Optionally include `chameleon_filtered` and `squirrel_filtered` as separate cleaned dataset variants (**572 combinations**). They are **not** merged with the original Chameleon and Squirrel benchmarks.
+**Sheaf attention distinction:** the preset registry also defines a `sheafan` variant,
+but the shipped dataset-specific `sheaf_attn` sweep YAMLs use `res_sheafan` only.
+The W&B `model` field is `sheaf_attn`; a user alias `sheaf_att` is accepted.
 
-Each row shows existing finished runs, how many remain to reach 250, completion percentage, and whether it is **Missing** (zero), **Incomplete** (1–249), or **Complete** (250+). The table supports model/dataset/map/status filters and a CSV download, while retaining only a small expected-coverage matrix in memory. `nsp` and `nsd` are **distinct** models: this intentionally uses the model name specified by the user.
+The three originally requested model families **`sheaf_deepset`**,
+**`sheaf_set_transformer`**, and **`sheaf_gin`** do not occur in the inspected
+source repository's sweep definitions or model registry. Until their actual
+supported map sets are confirmed, they are excluded from **expected/missing**
+totals (to avoid false missing experiments). Any runs already observed under
+those names in W&B are shown separately as *unverified observations*.
 
-Sources:
-- Pei et al., *Geom-GCN*, ICLR 2020.
-- Platonov et al., *A Critical Look at the Evaluation of GNNs Under Heterophily*, ICLR 2023.
+Datasets: six Pei et al. (2020) benchmarks (`texas`, `wisconsin`,
+`cornell`, `chameleon`, `squirrel`, `film`; Actor = Film)
+and five Platonov et al. (2023) benchmarks
+(`roman_empire`, `amazon_ratings`, `minesweeper`, `tolokers`, `questions`).
 
-Run offline unit tests with `python -m unittest discover -s tests -v`.
+**Correct expected count:** 17 model-specific sweeps × 11 datasets =
+**187 combinations**. Optionally include Platonov's
+`chameleon_filtered` and `squirrel_filtered` as separate datasets:
+17 × 13 = **221 combinations**. Previously the app incorrectly claimed
+11 models × 11 datasets × 4 maps = 484 combinations.
+
+Each row shows runs finished by W&B creator `fs395`, missing runs to the
+dashboard's requested 250-run target, completion percentage and status.
+The table is filterable and exportable, and uses only existing compact group
+summaries (no extra per-run W&B retrieval).
+
+**Note:** some shipped `joint_diff` and `rot_inv` sweeps configure
+`n_trials: 100`. The dashboard retains your **250-run target**; this
+is a user-defined monitoring threshold, not necessarily each sweep's
+configured trial budget.
+
+Run offline tests with `python -m unittest discover -s tests -v`.
