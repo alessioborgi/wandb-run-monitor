@@ -1,134 +1,163 @@
-"""Offline regression tests for W&B selection, metrics and filtering."""
+"""Offline tests of the memory-bounded W&B monitor."""
+import json
 import os
 import sys
 import types
 import unittest
 from unittest.mock import patch
 
-from core import TARGET, _config_str, _model_name, aggregate, fetch, metric_for
+from core import (
+    CREATOR, TARGET, _model_name, _number, compact_from_pages,
+    fetch, group_id, invalid_metric_fields, metric_for, SAMPLE_SIZE,
+)
 
 
-def run(model, dataset, transport, run_id, **metrics):
+def node(run_id, model="NSD", dataset="cora", transport="diagonal",
+         username="fs395", state="finished", **metrics):
     return {
-        "state": "finished",
-        "model": model,
-        "dataset": dataset,
-        "transport_type": transport,
-        "run_id": run_id,
-        "name": "run-" + run_id,
-        "url": "https://example.invalid/" + run_id,
-        **metrics,
+        "name": run_id,
+        "displayName": "run " + run_id,
+        "state": state,
+        "user": {"username": username} if username else None,
+        "config": json.dumps({
+            "model": {"value": model},
+            "dataset": {"value": dataset},
+            "transport_type": {"value": transport},
+        }),
+        "summaryMetrics": json.dumps(metrics),
     }
 
 
-class AggregateTests(unittest.TestCase):
-    def test_best_validation_not_best_test_and_matched_mean_std(self):
-        items = [
-            run("NSD", "cora", "orthogonal", "a",
-                mean_val_acc=0.83, mean_test_acc=0.99, std_test_acc=0.001),
-            run("NSD", "cora", "orthogonal", "b",
-                mean_val_acc=0.91, mean_test_acc=0.80, std_test_acc=0.04),
-        ]
-        result = aggregate(items)[0]
-        self.assertEqual(result["finished"], 2)
-        self.assertEqual(result["remaining"], TARGET - 2)
-        self.assertEqual(result["best_run_id"], "b")
-        self.assertEqual(result["best_validation"], 0.91)
-        self.assertEqual(result["mean_test_acc"], 0.80)
-        self.assertEqual(result["std_test_acc"], 0.04)
-        self.assertIsNone(result["mean_test_roc_auc"])
+class CompactTests(unittest.TestCase):
+    def test_accuracy_selects_best_validation_not_best_test(self):
+        data = compact_from_pages([[
+            node("a", mean_val_acc=.81, mean_test_acc=.97, std_test_acc=.01),
+            node("b", mean_val_acc=.90, mean_test_acc=.77, std_test_acc=.05),
+        ]])
+        self.assertEqual(data["matched"], 2)
+        group = data["groups"][0]
+        self.assertEqual(group["best_run_id"], "b")
+        self.assertEqual(group["mean_test_acc"], .77)
+        self.assertEqual(group["std_test_acc"], .05)
+        self.assertEqual(group["remaining"], TARGET - 2)
 
-    def test_roc_datasets_case_insensitive(self):
-        for dataset in ("minesweeper", "tolokers", "questions", " Questions "):
-            with self.subTest(dataset=dataset):
-                items = [
-                    run("GAT", dataset, "general", "a",
-                        mean_val_acc=0.99, mean_val_roc_auc=0.66,
-                        mean_test_roc_auc=0.95, std_test_roc_auc=0.01),
-                    run("GAT", dataset, "general", "b",
-                        mean_val_acc=0.12, mean_val_roc_auc=0.80,
-                        mean_test_roc_auc=0.73, std_test_roc_auc=0.05),
-                ]
-                result = aggregate(items)[0]
-                self.assertEqual(result["best_run_id"], "b")
-                self.assertEqual(result["selection_metric"], "mean_val_roc_auc")
-                self.assertEqual(result["mean_test_roc_auc"], 0.73)
-                self.assertEqual(result["std_test_roc_auc"], 0.05)
-                self.assertIsNone(result["mean_test_acc"])
+    def test_roc_datasets_use_validation_roc_auc(self):
+        for name in ("minesweeper", "tolokers", "questions", " Questions "):
+            with self.subTest(name=name):
+                data = compact_from_pages([[
+                    node("a", dataset=name, mean_val_acc=.99, mean_val_roc_auc=.61,
+                         mean_test_roc_auc=.91, std_test_roc_auc=.01),
+                    node("b", dataset=name, mean_val_acc=.21, mean_val_roc_auc=.81,
+                         mean_test_roc_auc=.73, std_test_roc_auc=.06),
+                ]])
+                row = data["groups"][0]
+                self.assertEqual(row["best_run_id"], "b")
+                self.assertEqual(row["mean_test_roc_auc"], .73)
+                self.assertEqual(row["std_test_roc_auc"], .06)
+                self.assertIsNone(row["mean_test_acc"])
 
-    def test_all_models_and_combinations_are_included(self):
-        items = [
-            run("NSD", "cora", "diagonal", "a", mean_val_acc=0.50),
-            run("ESNN", "cora", "diagonal", "b", mean_val_acc=0.70),
-            run("SAGE", "cora", "general", "c", mean_val_acc=0.40),
-        ]
-        result = aggregate(items)
-        self.assertEqual({x["model"] for x in result}, {"NSD", "ESNN", "SAGE"})
-        self.assertEqual(len(result), 3)
+    def test_other_model_families_are_included(self):
+        data = compact_from_pages([[
+            node("a", model="NSD"),
+            node("b", model="ESNN"),
+            node("c", model="GAT"),
+        ]])
+        self.assertEqual({r["model"] for r in data["groups"]}, {"NSD", "ESNN", "GAT"})
 
-    def test_missing_nan_and_infinite_validation_not_selected(self):
-        items = [
-            run("CNN", "citeseer", "lowrank", "b", mean_val_acc=float("nan"), mean_test_acc=0.8),
-            run("CNN", "citeseer", "lowrank", "c", mean_val_acc=float("inf"), mean_test_acc=0.9),
-        ]
-        result = aggregate(items)[0]
-        self.assertIsNone(result["best_validation"])
-        self.assertIsNone(result["best_run_id"])
-        self.assertIsNone(result["mean_test_acc"])
-        self.assertEqual(result["finished"], 2)
+    def test_server_data_is_rechecked_for_creator_and_finished_state(self):
+        data = compact_from_pages([[
+            node("a", username="fs395"),
+            node("b", username="different"),
+            node("c", state="running"),
+            node("d", username=None),
+        ]])
+        self.assertEqual(data["examined"], 4)
+        self.assertEqual(data["matched"], 1)
+        self.assertEqual(data["unknown"], 1)
+        self.assertEqual(data["groups"][0]["finished"], 1)
 
-    def test_tie_breaker_is_deterministic(self):
-        items = [
-            run("ESNN", "cora", "general", "b", mean_val_acc=0.8, mean_test_acc=0.5),
-            run("ESNN", "cora", "general", "a", mean_val_acc=0.8, mean_test_acc=0.4),
-        ]
-        self.assertEqual(aggregate(items)[0]["best_run_id"], "a")
-        self.assertEqual(aggregate(list(reversed(items)))[0]["best_run_id"], "a")
+    def test_no_validation_means_blank_best_and_diagnostic_metadata(self):
+        data = compact_from_pages([[
+            node("a", dataset="cornell", mean_test_acc=.80),
+            node("b", dataset="cornell", mean_val_acc=float("nan")),
+        ]])
+        row = data["groups"][0]
+        self.assertEqual(row["finished"], 2)
+        self.assertEqual(row["valid_validation_runs"], 0)
+        self.assertIsNone(row["best_run_id"])
+        self.assertIsNone(row["mean_test_acc"])
+        self.assertEqual(row["invalid_metric_runs"], 2)
+        self.assertTrue(row["invalid_samples"])
 
-    def test_wrapped_dataset_and_non_nsd_model_config(self):
-        self.assertEqual(_config_str({"dataset": {"value": "minesweeper", "_type": "str"}}, "dataset"), "minesweeper")
+    def test_memory_is_bounded_by_groups_and_samples(self):
+        pages = (
+            [node(str(i), mean_val_acc=i / 2000, mean_test_acc=.5, std_test_acc=.01)
+             for i in range(start, start + 30)]
+            for start in range(0, 1200, 30)
+        )
+        data = compact_from_pages(pages)
+        self.assertEqual(data["matched"], 1200)
+        self.assertEqual(len(data["groups"]), 1)
+        group = data["groups"][0]
+        self.assertLessEqual(len(group["sample_runs"]), SAMPLE_SIZE)
+        self.assertLessEqual(len(group["invalid_samples"]), SAMPLE_SIZE)
+        self.assertEqual(group["finished"], 1200)
+        self.assertEqual(group["best_run_id"], "1199")
+        self.assertEqual(group["remaining"], 0)
+        self.assertNotIn("runs", data)
+
+    def test_tie_break_by_run_id(self):
+        data = compact_from_pages([[
+            node("b", mean_val_acc=.7, mean_test_acc=.6),
+            node("a", mean_val_acc=.7, mean_test_acc=.5),
+        ]])
+        self.assertEqual(data["groups"][0]["best_run_id"], "a")
+
+    def test_missing_and_nonfinite_scores(self):
+        self.assertIsNone(_number(None))
+        self.assertIsNone(_number(float("inf")))
+        self.assertIsNone(_number("NaN"))
+        self.assertEqual(
+            invalid_metric_fields({
+                "dataset": "tolokers", "mean_val_roc_auc": .7,
+                "mean_test_roc_auc": .5, "std_test_roc_auc": None,
+            }),
+            ("std_test_roc_auc",),
+        )
+
+    def test_model_name_fallback(self):
         self.assertEqual(_model_name({"model_name": "ESNN"}), "ESNN")
         self.assertEqual(_model_name({"model": {"name": "GAT"}}), "GAT")
-        self.assertEqual(metric_for("tolokers")[0], "mean_val_roc_auc")
 
-
-class FetchTests(unittest.TestCase):
-    def test_fetch_filters_creator_state_and_keeps_non_nsd_models(self):
-        def fake_user(name):
-            return {"username": name}
-        def fake_run(user, model, run_id, state="finished"):
-            return types.SimpleNamespace(
-                _attrs={"user": fake_user(user)},
-                config={"model_name": model, "dataset": "cora", "transport_type": "general"},
-                summary={"mean_val_acc": 0.7, "mean_test_acc": 0.65, "std_test_acc": 0.03},
-                state=state, id=run_id, name="run-" + run_id,
-                url="https://example.invalid/" + run_id,
-            )
-        fake_runs = [
-            fake_run("fs395", "ESNN", "a"),
-            fake_run("fs395", "Transformer", "b"),
-            fake_run("other", "NSD", "c"),
-            fake_run("fs395", "NSD", "d", state="running"),
-            fake_run(None, "NSD", "e"),
-        ]
-        captured = {}
+    def test_fetch_uses_graphql_pagination_without_wandb_runs_iterator(self):
+        call_vars = []
+        class FakeService:
+            def execute_graphql(self, query, variables=None):
+                call_vars.append(dict(variables))
+                if variables["cursor"] is None:
+                    return {"project": {"runs": {
+                        "edges": [{"cursor": "c1", "node": node("a")}],
+                        "pageInfo": {"endCursor": "c1", "hasNextPage": True},
+                    }}}
+                return {"project": {"runs": {
+                    "edges": [{"cursor": "c2", "node": node("b", model="ESNN")}],
+                    "pageInfo": {"endCursor": "c2", "hasNextPage": False},
+                }}}
         class FakeApi:
             def __init__(self, **kwargs):
-                captured["api_args"] = kwargs
-            def runs(self, project, **kwargs):
-                captured["project"] = project
-                captured["kwargs"] = kwargs
-                return fake_runs
-
-        with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key"}):
+                self._service_api = FakeService()
+            def runs(self, *args, **kwargs):
+                raise AssertionError("The in-memory Runs iterator must never be used")
+        with patch.dict(os.environ, {"WANDB_API_KEY": "fake-key"}):
             with patch.dict(sys.modules, {"wandb": types.SimpleNamespace(Api=FakeApi)}):
-                result = fetch()
-        self.assertEqual(captured["project"], "adavit/sheaf-mpnn-runs")
-        self.assertEqual(captured["kwargs"]["filters"], {"state": "finished", "username": "fs395"})
-        self.assertIs(captured["kwargs"]["lazy"], False)
-        self.assertEqual({x["model"] for x in result["runs"]}, {"ESNN", "Transformer"})
-        self.assertEqual(result["unknown"], 1)
-        self.assertEqual(result["examined"], 5)
+                data = fetch()
+        self.assertEqual(len(call_vars), 2)
+        self.assertEqual(call_vars[1]["cursor"], "c1")
+        self.assertEqual(json.loads(call_vars[0]["filters"]), {
+            "state": "finished", "username": CREATOR,
+        })
+        self.assertEqual(data["matched"], 2)
+        self.assertEqual({g["model"] for g in data["groups"]}, {"NSD", "ESNN"})
 
 
 if __name__ == "__main__":
