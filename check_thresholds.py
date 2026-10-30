@@ -1,13 +1,13 @@
 import os,json,smtplib,ssl
 from email.message import EmailMessage
 from pathlib import Path
-from core import fetch,aggregate,group_id,TARGET
+from core import fetch,group_id,TARGET
 path=Path("data/notified.json")
 data=fetch()
-groups=aggregate(data["runs"])
+groups=data["groups"]
 old=set(json.loads(path.read_text()).get("notified",[])) if path.exists() else set()
 new=[r for r in groups if r["finished"]>=TARGET and group_id(r) not in old]
-print(f"Matched {len(data['runs'])} finished runs; {len(new)} newly completed groups")
+print(f"Matched {data["matched"]} finished runs; {len(new)} newly completed groups")
 if new:
  message=EmailMessage()
  message["From"]=os.environ["SMTP_USER"];message["To"]=os.environ["ALERT_TO"]
