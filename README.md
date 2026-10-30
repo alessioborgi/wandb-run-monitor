@@ -35,3 +35,23 @@ The compact GraphQL fetch uses a modern W&B Python SDK (`wandb>=0.27.1`). No aut
 ## Regression tests
 
 Run `python -m unittest discover -s tests -v`. The private repository also includes a GitHub Actions test workflow checking metric selection, non-NSD models, missing scores, and creator filtering.
+
+
+## Missing benchmark combinations
+
+The Streamlit dashboard includes a separate **Missing benchmark combinations** table. It compares all expected model–dataset–restriction map configurations against the compact W&B snapshot for finished runs from creator `fs395`.
+
+- Models (11): `nsp`, `poly_nsd`, `bsnn`, `joint_diff`, `sheaf_deepset`, `sheaf_set_transformer`, `sheaf_gin`, `id_sheaf`, `conn_nsd`, `sheaf_att`, `rot_inv`.
+- Pei et al. (2020) datasets (6): `texas`, `wisconsin`, `cornell`, `chameleon`, `squirrel`, `film` (alias: Actor).
+- Platonov et al. (2023) datasets (5): `roman_empire`, `amazon_ratings`, `minesweeper`, `tolokers`, `questions`.
+- Restriction maps (4): `diagonal`, `general`, `orthogonal`, `low_rank` (normalized from the W&B `transport_type` configuration field).
+
+**Total expected:** 11 × 11 × 4 = **484 combinations**. Optionally include `chameleon_filtered` and `squirrel_filtered` as separate cleaned dataset variants (**572 combinations**). They are **not** merged with the original Chameleon and Squirrel benchmarks.
+
+Each row shows existing finished runs, how many remain to reach 250, completion percentage, and whether it is **Missing** (zero), **Incomplete** (1–249), or **Complete** (250+). The table supports model/dataset/map/status filters and a CSV download, while retaining only a small expected-coverage matrix in memory. `nsp` and `nsd` are **distinct** models: this intentionally uses the model name specified by the user.
+
+Sources:
+- Pei et al., *Geom-GCN*, ICLR 2020.
+- Platonov et al., *A Critical Look at the Evaluation of GNNs Under Heterophily*, ICLR 2023.
+
+Run offline unit tests with `python -m unittest discover -s tests -v`.
