@@ -1,6 +1,5 @@
 """Interactive, protected W&B run progress dashboard."""
 import os
-import re
 import hmac
 import streamlit as st
 import pandas as pd
@@ -44,8 +43,9 @@ with st.sidebar:
 
 
 @st.cache_data(ttl=110, show_spinner=False)
-def read(_progress=None):
-    return fetch(progress=_progress)
+def read():
+    # Data cache contains no Streamlit UI calls or callbacks.
+    return fetch()
 
 
 if refresh:
@@ -55,13 +55,8 @@ if refresh:
 @st.fragment(run_every="120s" if auto else None)
 def dashboard():
     with st.status("Loading finished runs from W&B…", expanded=True) as status:
-        step = st.empty()
-
-        def on_progress(examined, matched):
-            step.write(f"Fetched {examined:,} runs; {matched:,} passed the creator verification…")
-
         try:
-            data = read(_progress=on_progress)
+            data = read()
         except Exception as exc:
             status.update(label="Could not load W&B data", state="error", expanded=True)
             # Never accidentally echo a credential from a lower-level exception.
@@ -70,15 +65,15 @@ def dashboard():
                 secret = os.environ.get(secret_name, "")
                 if secret:
                     error = error.replace(secret, "[REDACTED]")
-            step.error(f"{type(exc).__name__}: {error}")
+            st.error(f"{type(exc).__name__}: {error}")
             st.info(
                 "Check WANDB_API_KEY and WANDB_BASE_URL in Streamlit app secrets. "
                 "The API endpoint should be https://api.forge.coreweave.com, "
                 "not a W&B dashboard URL. A large project may take time on first load."
             )
             return
-        step.write(
-            f'Finished fetching: {data["examined"]:,} server-filtered runs; '
+        st.write(
+            f'Fetched {data["examined"]:,} server-filtered runs; '
             f'{len(data["runs"]):,} verified matches.'
         )
         status.update(label="W&B data loaded", state="complete", expanded=False)
