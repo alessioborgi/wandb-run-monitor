@@ -35,7 +35,8 @@ def _user_name(run):
 
 
 def _plain(value):
-    if isinstance(value, dict) and "value" in value and len(value) == 1:
+    # W&B sometimes wraps values as {"value": ..., "_type": ...}.
+    if isinstance(value, dict) and "value" in value:
         value = value["value"]
     if isinstance(value, (dict, list)):
         return json.dumps(value, sort_keys=True)
