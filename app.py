@@ -7,6 +7,9 @@ import altair as alt
 import streamlit as st
 
 from core import CREATOR, PROJECT, TARGET, ROC_DATASETS, TEST_COLUMNS, fetch
+from coverage import (
+    MODELS, RESTRICTION_MAPS, coverage_matrix, benchmark_datasets,
+)
 
 st.set_page_config(page_title="Sheaf Run Monitor", page_icon="📈", layout="wide")
 st.title("Sheaf Run Monitor")
@@ -51,6 +54,91 @@ if refresh:
     read.clear()
 
 
+def show_benchmark_coverage(groups):
+    """Show the Cartesian expected grid using only the compact W&B group list."""
+    st.subheader("Missing benchmark combinations")
+    st.caption(
+        "Expected coverage: the 11 specified model families × Pei/Platonov "
+        "heterophily datasets × 4 restriction maps. 'Missing' means ZERO "
+        "finished runs; 'Incomplete' means 1–249 finished runs."
+    )
+    cleaned = st.checkbox(
+        "Also include Platonov's cleaned Chameleon/Squirrel variants",
+        value=False,
+        key="include_filtered_heterophily",
+    )
+    coverage = pd.DataFrame(coverage_matrix(groups, include_filtered=cleaned))
+
+    total = len(coverage)
+    missing = int((coverage["status"] == "Missing").sum())
+    incomplete = int((coverage["status"] == "Incomplete").sum())
+    complete = int((coverage["status"] == "Complete").sum())
+    stats = st.columns(4)
+    stats[0].metric("Expected combinations", total)
+    stats[1].metric("Not started (0 runs)", missing)
+    stats[2].metric("Below 250 runs", incomplete)
+    stats[3].metric("Reached 250 runs", complete)
+
+    controls = st.columns(4)
+    selected_models = controls[0].multiselect(
+        "Model", list(MODELS), key="coverage_models"
+    )
+    selected_datasets = controls[1].multiselect(
+        "Dataset", [d for d, _ in benchmark_datasets(cleaned)],
+        key="coverage_datasets",
+    )
+    selected_maps = controls[2].multiselect(
+        "Restriction map", list(RESTRICTION_MAPS), key="coverage_maps"
+    )
+    selected_status = controls[3].multiselect(
+        "Progress status", ["Missing", "Incomplete", "Complete"],
+        default=["Missing", "Incomplete"],
+        key="coverage_status",
+    )
+
+    if selected_models:
+        coverage = coverage[coverage["model"].isin(selected_models)]
+    if selected_datasets:
+        coverage = coverage[coverage["dataset"].isin(selected_datasets)]
+    if selected_maps:
+        coverage = coverage[coverage["restriction_maps"].isin(selected_maps)]
+    # Clearing the statuses deliberately shows all statuses.
+    if selected_status:
+        coverage = coverage[coverage["status"].isin(selected_status)]
+
+    columns = [
+        "model", "dataset", "restriction_maps", "benchmark",
+        "finished_runs", "missing_runs", "completion_pct", "status",
+    ]
+    st.dataframe(
+        coverage[columns],
+        hide_index=True,
+        use_container_width=True,
+        height=440,
+        column_config={
+            "finished_runs": st.column_config.NumberColumn("Finished runs"),
+            "missing_runs": st.column_config.NumberColumn("Runs left to 250"),
+            "completion_pct": st.column_config.ProgressColumn(
+                "Completion", min_value=0, max_value=100, format="%.1f%%"
+            ),
+        },
+    )
+    st.caption(
+        f"Showing {len(coverage)} of {total} expected combinations. "
+        "Counts are from finished runs created by fs395. "
+        "The restriction_maps column matches W&B's transport_type field; "
+        "Actor and Film, plus low-rank naming variants, are matched. "
+        "nsp is treated as distinct from nsd, as written in your request."
+    )
+    st.download_button(
+        "Download displayed coverage (CSV)",
+        coverage[columns].to_csv(index=False),
+        file_name="missing_benchmark_combinations.csv",
+        mime="text/csv",
+        key="coverage_csv",
+    )
+
+
 @st.fragment(run_every="300s" if auto else None)
 def dashboard():
     with st.status("Reading compact W&B result pages…", expanded=True) as status:
@@ -84,6 +172,11 @@ def dashboard():
     b.metric("Combinations", len(groups))
     c.metric("Reached 250", sum(g["finished"] >= TARGET for g in groups))
     d.metric("Runs remaining", sum(g["remaining"] for g in groups))
+
+    # The coverage grid is generated from dozens of compact group summaries,
+    # not thousands of individual runs, so it remains memory-bounded.
+    show_benchmark_coverage(groups)
+
     if not groups:
         st.warning("No finished runs matched the creator. Check W&B permissions and filters.")
         return
