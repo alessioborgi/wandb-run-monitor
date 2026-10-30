@@ -100,6 +100,31 @@ def metric_for(dataset):
     return "mean_val_acc", "mean_test_acc", "std_test_acc"
 
 
+def invalid_metric_fields(row):
+    """Exact required fields missing/nonfinite for a single run."""
+    return tuple(
+        name for name in metric_for(row["dataset"])
+        if _number(row.get(name)) is None
+    )
+
+
+def _metric_key_names(summary):
+    """Metadata only: metric-like summary key names to help diagnose missing scores."""
+    if isinstance(summary, str):
+        try:
+            summary = json.loads(summary)
+        except (TypeError, ValueError):
+            return []
+    if not hasattr(summary, "keys"):
+        return []
+    return sorted(
+        key for key in summary.keys()
+        if isinstance(key, str) and any(
+            token in key.casefold() for token in ("acc", "auc", "roc", "test", "val")
+        )
+    )[:80]
+
+
 def fetch(progress=None):
     """Read finished runs in pages and validate the creator client-side too."""
     import wandb
@@ -140,6 +165,7 @@ def fetch(progress=None):
             "run_id": str(run.id),
             "name": str(run.name or run.id),
             "url": str(getattr(run, "url", "") or ""),
+            "available_metric_keys": _metric_key_names(summary),
             **{
                 name: _summary_value(summary, name)
                 for name in (
@@ -167,13 +193,20 @@ def aggregate(runs):
     """
     counts = Counter()
     winners = {}
+    validation_counts = Counter()
+    complete_metric_counts = Counter()
+    possible_keys = {}
     for run in runs:
         group = tuple(run[k] for k in KEYS)
         counts[group] += 1
+        possible_keys.setdefault(group, set()).update(run.get("available_metric_keys", []))
+        if not invalid_metric_fields(run):
+            complete_metric_counts[group] += 1
         validation_name, _, _ = metric_for(run["dataset"])
         val = _number(run.get(validation_name))
         if val is None:
             continue
+        validation_counts[group] += 1
         previous = winners.get(group)
         if previous is None or val > previous[0] or (
             val == previous[0] and str(run.get("run_id", "")) < str(previous[1].get("run_id", ""))
@@ -193,6 +226,10 @@ def aggregate(runs):
             "status": ("Complete" if count >= TARGET
                        else "Almost there" if count >= 200 else "In progress"),
             "selection_metric": val_name,
+            "valid_validation_runs": validation_counts[group],
+            "valid_all_metrics_runs": complete_metric_counts[group],
+            "invalid_metric_runs": count - complete_metric_counts[group],
+            "available_metric_keys": sorted(possible_keys.get(group, set())),
             "best_validation": best[0] if best else None,
             "best_run_id": chosen.get("run_id") if chosen else None,
             "best_run_name": chosen.get("name") if chosen else None,
