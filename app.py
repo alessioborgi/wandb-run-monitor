@@ -115,8 +115,25 @@ def dashboard():
         st.info("No combinations match those selections.")
         return
 
+    # Keep the requested test metric names; hide irrelevant pairs when the
+    # current selection contains only accuracy or only ROC-AUC datasets.
+    roc_datasets = {"minesweeper", "tolokers", "questions"}
+    roc_rows = filtered["dataset"].str.strip().str.casefold().isin(roc_datasets)
+    score_columns = []
+    if (~roc_rows).any():
+        score_columns.extend(["mean_test_acc", "std_test_acc"])
+    if roc_rows.any():
+        score_columns.extend(["mean_test_roc_auc", "std_test_roc_auc"])
+
+    base_columns = [
+        "state", "model", "dataset", "transport_type",
+        "finished", "remaining", "progress", "status",
+        "selection_metric", "best_validation",
+    ]
+    display_columns = base_columns + score_columns + ["best_run_url"]
+
     st.dataframe(
-        filtered,
+        filtered[display_columns],
         hide_index=True,
         use_container_width=True,
         column_config={
@@ -125,13 +142,56 @@ def dashboard():
             ),
             "finished": st.column_config.NumberColumn("Finished"),
             "remaining": st.column_config.NumberColumn("Remaining"),
+            "best_validation": st.column_config.NumberColumn("Best validation", format="%.5f"),
+            "mean_test_acc": st.column_config.NumberColumn("mean_test_acc", format="%.5f"),
+            "std_test_acc": st.column_config.NumberColumn("std_test_acc", format="%.5f"),
+            "mean_test_roc_auc": st.column_config.NumberColumn("mean_test_roc_auc", format="%.5f"),
+            "std_test_roc_auc": st.column_config.NumberColumn("std_test_roc_auc", format="%.5f"),
+            "best_run_url": st.column_config.LinkColumn("Selected run", display_text="Open run"),
         },
     )
+    st.caption(
+        "Best results are selected by the highest mean_val_acc, except for "
+        "minesweeper, tolokers and questions (highest mean_val_roc_auc). "
+        "Each mean/std test pair comes from the same selected run. "
+        "Missing validation metrics are shown as blank rather than selecting by test."
+    )
+    missing_best = filtered["best_validation"].isna().sum()
+    if missing_best:
+        st.warning(
+            f"{missing_best} combination(s) have no valid validation metric in any finished run; "
+            "their best-result fields are blank."
+        )
     st.download_button(
-        "Download group counts (CSV)",
+        "Download group counts and best scores (CSV)",
         filtered.to_csv(index=False),
-        file_name="wandb_progress.csv",
+        file_name="wandb_progress_and_best_results.csv",
         mime="text/csv",
+    )
+
+    st.subheader("Best results by validation")
+    st.caption(
+        "Ranked within each dataset by its chosen validation metric, descending. "
+        "All model families from fs395 are eligible."
+    )
+    leaderboard = filtered.sort_values(
+        ["dataset", "best_validation", "model", "transport_type"],
+        ascending=[True, False, True, True],
+        na_position="last",
+        kind="stable",
+    )
+    leaderboard_columns = [
+        "dataset", "model", "transport_type", "selection_metric",
+        "best_validation", *score_columns, "finished", "best_run_url",
+    ]
+    st.dataframe(
+        leaderboard[leaderboard_columns],
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "best_validation": st.column_config.NumberColumn("Best validation", format="%.5f"),
+            "best_run_url": st.column_config.LinkColumn("Best run", display_text="Open run"),
+        },
     )
 
     chart = filtered.copy()
