@@ -5,7 +5,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-from core import PROJECT, CREATOR, TARGET, fetch, aggregate
+from core import PROJECT, CREATOR, TARGET, fetch, aggregate, invalid_metric_fields
 
 st.set_page_config(page_title="Sheaf Run Monitor", page_icon="📈", layout="wide")
 st.title("Sheaf Run Monitor")
@@ -129,11 +129,18 @@ def dashboard():
         "state", "model", "dataset", "transport_type",
         "finished", "remaining", "progress", "status",
         "selection_metric", "best_validation",
+        "valid_validation_runs", "valid_all_metrics_runs",
     ]
     display_columns = base_columns + score_columns + ["best_run_url"]
 
+    # Presentation only: W&B stores 0..1 ratios. The displayed test means
+    # and standard deviations are both multiplied by 100 (percentage points).
+    display_df = filtered[display_columns].copy()
+    for metric_name in score_columns:
+        display_df[metric_name] = pd.to_numeric(display_df[metric_name], errors="coerce") * 100
+
     st.dataframe(
-        filtered[display_columns],
+        display_df,
         hide_index=True,
         use_container_width=True,
         column_config={
@@ -143,10 +150,12 @@ def dashboard():
             "finished": st.column_config.NumberColumn("Finished"),
             "remaining": st.column_config.NumberColumn("Remaining"),
             "best_validation": st.column_config.NumberColumn("Best validation", format="%.5f"),
-            "mean_test_acc": st.column_config.NumberColumn("mean_test_acc", format="%.5f"),
-            "std_test_acc": st.column_config.NumberColumn("std_test_acc", format="%.5f"),
-            "mean_test_roc_auc": st.column_config.NumberColumn("mean_test_roc_auc", format="%.5f"),
-            "std_test_roc_auc": st.column_config.NumberColumn("std_test_roc_auc", format="%.5f"),
+            "mean_test_acc": st.column_config.NumberColumn("mean_test_acc (%)", format="%.2f%%"),
+            "std_test_acc": st.column_config.NumberColumn("std_test_acc (%)", format="%.2f%%"),
+            "mean_test_roc_auc": st.column_config.NumberColumn("mean_test_roc_auc (%)", format="%.2f%%"),
+            "std_test_roc_auc": st.column_config.NumberColumn("std_test_roc_auc (%)", format="%.2f%%"),
+            "valid_validation_runs": st.column_config.NumberColumn("Valid validation runs"),
+            "valid_all_metrics_runs": st.column_config.NumberColumn("Complete-metric runs"),
             "best_run_url": st.column_config.LinkColumn("Selected run", display_text="Open run"),
         },
     )
@@ -160,12 +169,73 @@ def dashboard():
     if missing_best:
         st.warning(
             f"{missing_best} combination(s) have no valid validation metric in any finished run; "
-            "their best-result fields are blank."
+            "their best-result fields are blank. This does NOT imply only "
+            f"{missing_best} individual runs are affected."
         )
+        with st.expander("Inspect missing validation metrics and available W&B keys"):
+            missing_rows = filtered[filtered["best_validation"].isna()].copy()
+            missing_rows["available_metric_keys"] = missing_rows["available_metric_keys"].apply(
+                lambda keys: ", ".join(keys) if keys else "(none detected)"
+            )
+            st.dataframe(
+                missing_rows[[
+                    "model", "dataset", "transport_type", "finished",
+                    "selection_metric", "valid_validation_runs",
+                    "valid_all_metrics_runs", "available_metric_keys",
+                ]],
+                hide_index=True,
+                use_container_width=True,
+            )
+            st.caption(
+                "Metrics are read from W&B run summaries. Missing values may "
+                "be stored under different names or in run history. "
+                "Review runs before deleting anything in W&B."
+            )
+    invalid_count = int(filtered["invalid_metric_runs"].sum())
+    if invalid_count:
+        st.info(
+            f"{invalid_count:,} finished runs in the selected combinations lack at least "
+            "one required validation, test mean, or test std metric. "
+            "These runs are still present in W&B and counted as finished."
+        )
+        with st.expander("Review individual runs with missing or invalid metrics"):
+            group_keys = set(
+                tuple(row[key] for key in ("state", "model", "dataset", "transport_type"))
+                for _, row in filtered.iterrows()
+            )
+            invalid_rows = [
+                {
+                    "run_id": run["run_id"],
+                    "model": run["model"],
+                    "dataset": run["dataset"],
+                    "transport_type": run["transport_type"],
+                    "missing_or_invalid": ", ".join(invalid_metric_fields(run)),
+                    "url": run["url"],
+                }
+                for run in rows
+                if tuple(run[key] for key in ("state", "model", "dataset", "transport_type")) in group_keys
+                and invalid_metric_fields(run)
+            ]
+            st.dataframe(pd.DataFrame(invalid_rows), hide_index=True, use_container_width=True)
+            st.download_button(
+                "Download run-level invalid metric audit (CSV)",
+                pd.DataFrame(invalid_rows).to_csv(index=False),
+                file_name="invalid_wandb_runs_audit.csv",
+                mime="text/csv",
+                key="audit_download",
+            )
+    # Export unambiguous percentage-point columns rather than silently
+    # changing the numeric scale of columns named like W&B raw metrics.
+    export_df = filtered.drop(columns=["available_metric_keys"]).copy()
+    percentage_names = {}
+    for metric_name in ("mean_test_acc", "std_test_acc", "mean_test_roc_auc", "std_test_roc_auc"):
+        export_df[metric_name] = pd.to_numeric(export_df[metric_name], errors="coerce") * 100
+        percentage_names[metric_name] = metric_name + "_pct"
+    export_df = export_df.rename(columns=percentage_names)
     st.download_button(
-        "Download group counts and best scores (CSV)",
-        filtered.to_csv(index=False),
-        file_name="wandb_progress_and_best_results.csv",
+        "Download group counts and best scores (CSV, test values in %)",
+        export_df.to_csv(index=False),
+        file_name="wandb_progress_and_best_results_percent.csv",
         mime="text/csv",
     )
 
@@ -184,13 +254,23 @@ def dashboard():
         "dataset", "model", "transport_type", "selection_metric",
         "best_validation", *score_columns, "finished", "best_run_url",
     ]
+    leaderboard_display = leaderboard[leaderboard_columns].copy()
+    for metric_name in score_columns:
+        leaderboard_display[metric_name] = (
+            pd.to_numeric(leaderboard_display[metric_name], errors="coerce") * 100
+        )
+    score_format = {
+        name: st.column_config.NumberColumn(name + " (%)", format="%.2f%%")
+        for name in score_columns
+    }
     st.dataframe(
-        leaderboard[leaderboard_columns],
+        leaderboard_display,
         hide_index=True,
         use_container_width=True,
         column_config={
             "best_validation": st.column_config.NumberColumn("Best validation", format="%.5f"),
             "best_run_url": st.column_config.LinkColumn("Best run", display_text="Open run"),
+            **score_format,
         },
     )
 
@@ -231,7 +311,22 @@ def dashboard():
             for k in ("model", "dataset", "transport_type")
         )
     ]
-    st.dataframe(pd.DataFrame(details), hide_index=True, use_container_width=True)
+    details_df = pd.DataFrame(details)
+    details_df["missing_or_invalid"] = [
+        ", ".join(invalid_metric_fields(run)) for run in details
+    ]
+    for metric_name in ("mean_test_acc", "std_test_acc", "mean_test_roc_auc", "std_test_roc_auc"):
+        details_df[metric_name + "_pct"] = (
+            pd.to_numeric(details_df[metric_name], errors="coerce") * 100
+        )
+    visible_details = [
+        "run_id", "name", "model", "dataset", "transport_type",
+        "mean_val_acc", "mean_val_roc_auc",
+        "mean_test_acc_pct", "std_test_acc_pct",
+        "mean_test_roc_auc_pct", "std_test_roc_auc_pct",
+        "missing_or_invalid", "url",
+    ]
+    st.dataframe(details_df[visible_details], hide_index=True, use_container_width=True)
     st.download_button(
         "Download selected runs (CSV)",
         pd.DataFrame(details).to_csv(index=False),
