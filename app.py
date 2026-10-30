@@ -3,7 +3,7 @@ import os
 import hmac
 
 import pandas as pd
-import plotly.express as px
+import altair as alt
 import streamlit as st
 
 from core import CREATOR, PROJECT, TARGET, ROC_DATASETS, TEST_COLUMNS, fetch
@@ -195,16 +195,19 @@ def dashboard():
         chart["model"] + " / " + chart["dataset"] + " / " + chart["transport_type"]
     )
     chart = chart.nlargest(25, "finished")
-    fig = px.bar(
-        chart, x="finished", y="Combination", orientation="h",
-        hover_data=["remaining"], title="Combinations closest to 250 runs"
+    # Altair ships with Streamlit and avoids importing Plotly's larger stack.
+    bars = alt.Chart(chart).mark_bar().encode(
+        x=alt.X("finished:Q", title="Finished runs"),
+        y=alt.Y("Combination:N", sort="-x", title=None),
+        tooltip=["Combination:N", "finished:Q", "remaining:Q"],
     )
-    fig.add_vline(x=TARGET, line_dash="dash", annotation_text="Target 250")
-    fig.update_layout(
-        yaxis={"categoryorder": "total ascending"},
-        height=max(360, 30 * len(chart)),
+    target = alt.Chart(pd.DataFrame({"target": [TARGET]})).mark_rule(
+        strokeDash=[5, 5]
+    ).encode(x="target:Q")
+    st.altair_chart(
+        (bars + target).properties(height=max(360, 30 * len(chart))),
+        use_container_width=True,
     )
-    st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Inspect a combination")
     selected_id = st.selectbox(
